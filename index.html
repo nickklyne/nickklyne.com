@@ -318,7 +318,7 @@ const Cube = (function(){
   const VS = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]];
   const ED = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
   const BASE_RX = .42;
-  let W,H,dpr, ry = .7, rx = BASE_RX, vel = 0, hover = -1, proj = [];
+  let W,H,dpr, ry = .7, rx = BASE_RX, vel = 0, hover = -1, centering = null, proj = [];
   const AUTO = REDUCED ? 0 : .00004;            /* ~2.6 min per revolution */
   const coarse = matchMedia('(pointer: coarse)').matches;
 
@@ -339,7 +339,14 @@ const Cube = (function(){
   let dragging = false, moved = 0, lastDX = 0;
 
   function draw(t, dt){
-    if (!dragging){
+    if (centering){
+      ry += (centering.ry - ry) * Math.min(1, dt * .008);
+      rx += (centering.rx - rx) * Math.min(1, dt * .008);
+      if (performance.now() - centering.t0 > 950){
+        const url = centering.url; centering = null;
+        location.href = url;
+      }
+    } else if (!dragging){
       ry += (AUTO + vel) * dt;
       vel *= .94;
       rx += (BASE_RX - rx) * Math.min(1, dt * .004);   /* spring back upright */
@@ -448,14 +455,26 @@ const Cube = (function(){
     hover = hit(e);
     if (!coarse) cv.style.cursor = hover > -1 ? 'pointer' : 'grab';
   });
-  cv.addEventListener('pointerdown', e => { dragging = true; moved = 0; lastDX = 0; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointerdown', e => { dragging = true; moved = 0; lastDX = 0; centering = null; cv.setPointerCapture(e.pointerId); });
   cv.addEventListener('pointerup', e => {
     dragging = false;
     vel = Math.max(-.003, Math.min(.003, lastDX * .0004));   /* gentle release momentum */
     const h = hit(e);
-    if (moved < 8 && h > -1) window.open(CONTENT.links[h].url, '_blank', 'noopener');
+    if (moved < 8 && h > -1){
+      if (coarse){
+        /* tap: spin the icon to the center, let it pulse, then go */
+        const v = VS[h], TWO = Math.PI * 2;
+        let tRy = Math.atan2(-v[0], v[2]);
+        tRy = ry + (((tRy - ry) % TWO) + TWO * 1.5) % TWO - TWO / 2;
+        const tRx = Math.atan2(v[1], Math.hypot(v[0], v[2]));
+        centering = { ry: tRy, rx: tRx, url: CONTENT.links[h].url, t0: performance.now() };
+        hover = h; vel = 0;
+      } else {
+        window.open(CONTENT.links[h].url, '_blank', 'noopener');
+      }
+    }
   });
-  cv.addEventListener('pointerleave', () => { hover = -1; });
+  cv.addEventListener('pointerleave', () => { if (!centering) hover = -1; });
 
   return { draw };
 })();
