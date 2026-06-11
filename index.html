@@ -79,11 +79,17 @@
   }
   /* layer 3 — dot grid + ticks */
   .grid{
-    position:fixed;inset:0;z-index:3;pointer-events:none;
+    position:fixed;inset:-28px;z-index:3;pointer-events:none;
     background-image:radial-gradient(rgba(237,237,234,.05) 1px,transparent 1px);
     background-size:28px 28px;
+    animation:griddrift 60s linear infinite;
   }
-  .frame span{position:fixed;width:10px;height:10px;border:0 solid var(--hairlow);z-index:3;pointer-events:none}
+  @keyframes griddrift{to{transform:translate(28px,28px)}}
+  .frame span{position:fixed;width:10px;height:10px;border:0 solid var(--hairlow);z-index:3;pointer-events:none;opacity:.55;animation:cornerblink 25s linear infinite}
+  .frame .tr{animation-delay:6.25s}
+  .frame .br{animation-delay:12.5s}
+  .frame .bl{animation-delay:18.75s}
+  @keyframes cornerblink{0%,88%,100%{opacity:.55}92%{opacity:1}}
   .frame .tl{top:14px;left:14px;border-top-width:1px;border-left-width:1px}
   .frame .tr{top:14px;right:14px;border-top-width:1px;border-right-width:1px}
   .frame .bl{bottom:14px;left:14px;border-bottom-width:1px;border-left-width:1px}
@@ -162,8 +168,23 @@
     color:var(--bone);white-space:nowrap;
     background:var(--ink);
     padding:.55rem 1rem .55rem 1.45rem;
+    overflow:hidden;
+  }
+  .soon::after{
+    content:"";position:absolute;left:0;right:0;top:0;height:1px;
+    background:rgba(237,237,234,.18);
+    animation:scanline 12s linear infinite;
+  }
+  @keyframes scanline{
+    0%{transform:translateY(-2px);opacity:0}
+    2%{opacity:.9}
+    10%{transform:translateY(3rem);opacity:.9}
+    12%{opacity:0}
+    100%{transform:translateY(3rem);opacity:0}
   }
   .soon span{display:inline-block;animation:pulse 3.8s ease-in-out infinite}
+  .lockup svg path{transform-box:view-box;transform-origin:50% 49.6%;animation:arcscan 40s linear infinite}
+  @keyframes arcscan{to{transform:rotate(360deg)}}
   @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
 
   /* corners */
@@ -186,6 +207,7 @@
   @media (prefers-reduced-motion: reduce){
     .soon span{animation:none;opacity:.9}
     #loader svg,.ldots span{animation:none}
+    .lockup svg path,.grid,.frame span,.soon::after{animation:none}
   }
   @media (max-width:560px){
     :root{--cubesize:min(96vw,calc(100vh - 330px))}
@@ -324,6 +346,7 @@ const Cube = (function(){
   let foc = 4, intro = -1, lastAct = performance.now(), idle = null, prevFocus = -1, propag = null;
   let ripples = [], fx = 0, fy = 0, touching = false, bphase = 0, pry = null;
   let tiltX = 0, tiltY = 0, tsx = 0, tsy = 0, lastHapt = -1, amb = null;
+  let calib = null, calibAt = 0, jb = null, jbAt = 0, lastK = 0, schI = 0;
   const vbg = document.getElementById('bgvideo');
   const AUTO = REDUCED ? 0 : .00004;            /* ~2.6 min per revolution */
   const coarse = matchMedia('(pointer: coarse)').matches;
@@ -374,6 +397,10 @@ const Cube = (function(){
     if (pry === null) pry = ry;
     const spin = Math.abs(ry - pry) / Math.max(1, dt); pry = ry;
     bphase += dt * (.0016 + Math.min(.005, spin * 3));   /* breathing follows momentum */
+    schI += (((dragging || touching) ? 1 : 0) - schI) * Math.min(1, dt * .008);   /* schematic mode */
+    if (!calibAt) calibAt = t + 16000 + Math.random() * 14000;
+    if (!calib && t > calibAt) calib = { e: (Math.random() * ED.length) | 0, t0: t };
+    if (calib && t - calib.t0 > 2200){ calib = null; calibAt = t + 20000 + Math.random() * 18000; }
     const cy_ = Math.cos(rY), sy = Math.sin(rY), cx_ = Math.cos(rX), sx = Math.sin(rX);
     /* s = .2 → the cube can never leave the canvas, whatever the angle */
     const f = foc, s = Math.min(W,H) * .2, ox = W/2, oy = H/2;
@@ -441,9 +468,9 @@ const Cube = (function(){
       ctx.closePath(); ctx.fill();
       if (ep >= 1){
         if (d > .55){                                                  /* construction hairline */
-          ctx.strokeStyle = 'rgba(237,237,234,' + (.07*ip).toFixed(3) + ')';
+          ctx.strokeStyle = 'rgba(237,237,234,' + Math.min(1, .07 * ip * (1 + 1.2 * schI)).toFixed(3) + ')';
           ctx.lineWidth = .6 * dpr;
-          const off = 2.6 * dpr;
+          const off = (2.2 + .8 * (.5 + .5 * Math.sin(t * .00031 + ei))) * dpr;
           ctx.beginPath();
           ctx.moveTo(a.x + nx*off, a.y + ny*off);
           ctx.lineTo(b.x + nx*off, b.y + ny*off);
@@ -454,8 +481,13 @@ const Cube = (function(){
           const u = q/4;
           const px2 = a.x + (b.x-a.x)*u, py2 = a.y + (b.y-a.y)*u;
           const du = da + (db-da)*u;
-          const L2 = (1.0 + 1.2*du) * dpr;
-          ctx.strokeStyle = 'rgba(237,237,234,' + ((.09 + .13*du)*ip).toFixed(3) + ')';
+          let boost = 0;
+          if (calib && calib.e === ei){
+            const ct2 = (t - calib.t0) - (q - 1) * 550 - 250;
+            boost = Math.exp(-(ct2 * ct2) / 64800);
+          }
+          const L2 = (1.0 + 1.2*du) * (1 + .25 * schI + .3 * boost) * dpr;
+          ctx.strokeStyle = 'rgba(237,237,234,' + Math.min(1, (.09 + .13*du) * ip * (1 + .5 * schI) + .35 * boost).toFixed(3) + ')';
           ctx.beginPath();
           ctx.moveTo(px2 - nx*L2, py2 - ny*L2);
           ctx.lineTo(px2 + nx*L2, py2 + ny*L2);
@@ -470,7 +502,11 @@ const Cube = (function(){
     });
     /* junction nodes — dots ride the visual crossings of front and back edges */
     if (ip >= 1){
-      ctx.fillStyle = 'rgba(237,237,234,.22)';
+      if (!jbAt) jbAt = t + 5000 + Math.random() * 5000;
+      if (!jb && t > jbAt && lastK > 0) jb = { idx: (Math.random() * lastK) | 0, t0: t };
+      if (jb && t - jb.t0 > 650){ jb = null; jbAt = t + 6000 + Math.random() * 6000; }
+      let k = 0;
+      const jA = .22 * (1 + .6 * schI), jR = 1.1 * (1 + .2 * schI) * dpr;
       for (let i1 = 0; i1 < ED.length; i1++){
         for (let i2 = i1 + 1; i2 < ED.length; i2++){
           const E1 = ED[i1], E2 = ED[i2];
@@ -482,12 +518,21 @@ const Cube = (function(){
           const sP = ((a2.x-a1.x)*d2y - (a2.y-a1.y)*d2x) / den;
           const tP = ((a2.x-a1.x)*d1y - (a2.y-a1.y)*d1x) / den;
           if (sP > .06 && sP < .94 && tP > .06 && tP < .94){
+            let aJ = jA, rJ = jR;
+            if (jb && k === jb.idx){
+              const bt = t - jb.t0;
+              const env = Math.exp(-((bt-80)*(bt-80))/9800) + Math.exp(-((bt-300)*(bt-300))/9800);
+              aJ = Math.min(1, jA + .5 * env); rJ = jR * (1 + .3 * env);
+            }
+            ctx.fillStyle = 'rgba(237,237,234,' + aJ.toFixed(3) + ')';
             ctx.beginPath();
-            ctx.arc(a1.x + d1x*sP, a1.y + d1y*sP, 1.1 * dpr, 0, 7);
+            ctx.arc(a1.x + d1x*sP, a1.y + d1y*sP, rJ, 0, 7);
             ctx.fill();
+            k++;
           }
         }
       }
+      lastK = k;
     }
     /* ambient micro-traffic — a near-invisible data pulse, every few seconds */
     if (!REDUCED && ip >= 1){
@@ -610,7 +655,10 @@ const Cube = (function(){
       const base = (coarse ? 32 : 28);
       const sz = base * (.74 + .4*d) * dpr;
       ctx.save();
-      ctx.translate(p.x - sz/2, p.y - sz/2);
+      const dr2 = REDUCED ? 0 : .7 * dpr;
+      const ddx = Math.sin(t * .00007 * (1 + p.i * .13) + p.i * 2.1) * dr2;
+      const ddy = Math.cos(t * .00009 * (1 + p.i * .11) + p.i * 1.3) * dr2;
+      ctx.translate(p.x - sz/2 + ddx, p.y - sz/2 + ddy);
       ctx.scale(sz/24, sz/24);
       ctx.fillStyle = hov ? ACCENT : 'rgba(237,237,234,' + (.38 + .58*d) + ')';
       ctx.fill(ICONS[p.i]);
