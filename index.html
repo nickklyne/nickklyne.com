@@ -290,7 +290,7 @@ document.getElementById('listnote').textContent = CONTENT.mailingListNote;
   function hide(){
     if (gone) return; gone = true;
     const wait = Math.max(0, 300 - (performance.now() - t0));
-    setTimeout(() => { L.classList.add('off'); setTimeout(() => L.remove(), 700); }, wait);
+    setTimeout(() => { try{ Cube.startIntro(); }catch(_){} L.classList.add('off'); setTimeout(() => L.remove(), 700); }, wait);
   }
   v.addEventListener('canplay', hide, { once:true });
   v.addEventListener('loadeddata', hide, { once:true });
@@ -317,10 +317,24 @@ const Cube = (function(){
   const ctx = cv.getContext('2d');
   const VS = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]];
   const ED = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+  const OV = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  const OE = [[0,2],[0,3],[0,4],[0,5],[1,2],[1,3],[1,4],[1,5],[2,4],[2,5],[3,4],[3,5]];
   const BASE_RX = .42;
   let W,H,dpr, ry = .7, rx = BASE_RX, vel = 0, hover = -1, centering = null, proj = [];
+  let foc = 4, intro = -1, lastAct = performance.now(), idle = null, prevFocus = -1, propag = null;
+  let ripples = [], fx = 0, fy = 0, touching = false, bphase = 0, pry = null;
+  let tiltX = 0, tiltY = 0, tsx = 0, tsy = 0, lastHapt = -1, amb = null;
+  const vbg = document.getElementById('bgvideo');
   const AUTO = REDUCED ? 0 : .00004;            /* ~2.6 min per revolution */
   const coarse = matchMedia('(pointer: coarse)').matches;
+  if (!REDUCED && coarse && typeof DeviceOrientationEvent !== 'undefined'
+      && typeof DeviceOrientationEvent.requestPermission !== 'function'){
+    addEventListener('deviceorientation', ev => {
+      if (ev.gamma == null) return;
+      tiltX = Math.max(-1, Math.min(1, ev.gamma / 40));
+      tiltY = Math.max(-1, Math.min(1, (ev.beta - 45) / 40));
+    });
+  }
 
   function size(){
     dpr = Math.min(devicePixelRatio||1, 2);
@@ -351,9 +365,19 @@ const Cube = (function(){
       vel *= .94;
       rx += (BASE_RX - rx) * Math.min(1, dt * .004);   /* spring back upright */
     }
-    const cy_ = Math.cos(ry), sy = Math.sin(ry), cx_ = Math.cos(rx), sx = Math.sin(rx);
+    foc += ((dragging ? 3.55 : 4) - foc) * Math.min(1, dt * .01);   /* grab lean */
+    tsx += (tiltX - tsx) * Math.min(1, dt * .005);
+    tsy += (tiltY - tsy) * Math.min(1, dt * .005);
+    const rY = ry + tsx * .05, rX = rx + tsy * .04;   /* tilt parallax (where supported) */
+    if (vbg && (Math.abs(tsx) > .002 || Math.abs(tsy) > .002))
+      vbg.style.transform = 'translate(-50%,-50%) translate(' + (-tsx * 6).toFixed(1) + 'px,' + (-tsy * 4).toFixed(1) + 'px)';
+    if (pry === null) pry = ry;
+    const spin = Math.abs(ry - pry) / Math.max(1, dt); pry = ry;
+    bphase += dt * (.0016 + Math.min(.005, spin * 3));   /* breathing follows momentum */
+    const cy_ = Math.cos(rY), sy = Math.sin(rY), cx_ = Math.cos(rX), sx = Math.sin(rX);
     /* s = .2 → the cube can never leave the canvas, whatever the angle */
-    const f = 4, s = Math.min(W,H) * .2, ox = W/2, oy = H/2;
+    const f = foc, s = Math.min(W,H) * .2, ox = W/2, oy = H/2;
+    const ip = REDUCED ? 1 : (intro < 0 ? 0 : Math.min(1, (t - intro) / 900));   /* entrance progress */
 
     proj = VS.map((v,i) => {
       let x = v[0]*cy_ + v[2]*sy, z1 = -v[0]*sy + v[2]*cy_;
@@ -362,19 +386,127 @@ const Cube = (function(){
       return { x: ox + x*k*s, y: oy + y*k*s, z, i };
     });
 
+    const prox = (coarse && touching && ip >= 1)
+      ? proj.map(pp => Math.max(0, 1 - Math.hypot(pp.x - fx, pp.y - fy) / (150 * dpr)))
+      : null;
     const focus = hover;
+    if (focus !== prevFocus){
+      if (focus > -1 && ip >= 1) propag = { i: focus, t0: t };
+      prevFocus = focus;
+    }
 
     ctx.clearRect(0,0,W,H);
-    /* edges — thick, present */
-    ctx.lineWidth = 1.8 * dpr;
-    ED.forEach(e => {
-      const a = proj[e[0]], b = proj[e[1]];
-      const d = ((a.z + b.z)/2 + 1.8)/3.6;
-      ctx.strokeStyle = 'rgba(237,237,234,' + (.16 + .34*d) + ')';
-      ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+    /* inner structure — counter-rotating dual, slow luminous breathing */
+    const ry2 = -rY * 1.3;
+    const breathe = .5 + .35 * Math.sin(bphase) + .15 * Math.sin(t * .00037);
+    const cy2 = Math.cos(ry2), sy2 = Math.sin(ry2);
+    const s2 = s * (.92 + .05 * breathe);
+    ctx.lineWidth = 1 * dpr;
+    ctx.strokeStyle = ACCENT;
+    ctx.globalAlpha = ip * (.07 + .15 * breathe);
+    OE.forEach(e => {
+      const va = OV[e[0]], vb = OV[e[1]];
+      const ax = va[0]*cy2 + va[2]*sy2, az1 = -va[0]*sy2 + va[2]*cy2;
+      const ay = va[1]*cx_ - az1*sx,  az = va[1]*sx + az1*cx_;
+      const bx2 = vb[0]*cy2 + vb[2]*sy2, bz1 = -vb[0]*sy2 + vb[2]*cy2;
+      const by2 = vb[1]*cx_ - bz1*sx,  bz = vb[1]*sx + bz1*cx_;
+      const ka = f/(f - az), kb = f/(f - bz);
+      ctx.beginPath();
+      ctx.moveTo(ox + ax*ka*s2, oy + ay*ka*s2);
+      ctx.lineTo(ox + bx2*kb*s2, oy + by2*kb*s2);
+      ctx.stroke();
     });
+    ctx.globalAlpha = 1;
+    /* edges — thick, present */
+    ED.forEach((e, ei) => {
+      const a = proj[e[0]], b = proj[e[1]];
+      const da = (a.z + 1.8)/3.6, db = (b.z + 1.8)/3.6;
+      const d = (da + db)/2;
+      const ep = ip >= 1 ? 1 : Math.max(0, Math.min(1, (ip - ei * .03) / .62));
+      if (ep <= 0) return;
+      const bx = a.x + (b.x - a.x) * ep, by = a.y + (b.y - a.y) * ep;
+      const dxn = bx - a.x, dyn = by - a.y, ln = Math.hypot(dxn, dyn) || 1;
+      const nx = -dyn/ln, ny = dxn/ln;
+      const br = 1 + .03 * Math.sin(t * .0011 + ei * 1.7);            /* per-edge breath */
+      const wa = (.7 + 1.5*da) * dpr, wb = (.7 + 1.5*db) * dpr;       /* true depth taper */
+      const grad = ctx.createLinearGradient(a.x, a.y, bx, by);
+      grad.addColorStop(0, 'rgba(237,237,234,' + Math.min(1,(.13 + .34*da)*br).toFixed(3) + ')');
+      grad.addColorStop(1, 'rgba(237,237,234,' + Math.min(1,(.13 + .34*db)*br).toFixed(3) + ')');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(a.x + nx*wa/2, a.y + ny*wa/2);
+      ctx.lineTo(bx + nx*wb/2, by + ny*wb/2);
+      ctx.lineTo(bx - nx*wb/2, by - ny*wb/2);
+      ctx.lineTo(a.x - nx*wa/2, a.y - ny*wa/2);
+      ctx.closePath(); ctx.fill();
+      if (ep >= 1){
+        if (d > .55){                                                  /* construction hairline */
+          ctx.strokeStyle = 'rgba(237,237,234,' + (.07*ip).toFixed(3) + ')';
+          ctx.lineWidth = .6 * dpr;
+          const off = 2.6 * dpr;
+          ctx.beginPath();
+          ctx.moveTo(a.x + nx*off, a.y + ny*off);
+          ctx.lineTo(b.x + nx*off, b.y + ny*off);
+          ctx.stroke();
+        }
+        ctx.lineWidth = .7 * dpr;                                      /* ruler ticks */
+        for (let q = 1; q <= 3; q++){
+          const u = q/4;
+          const px2 = a.x + (b.x-a.x)*u, py2 = a.y + (b.y-a.y)*u;
+          const du = da + (db-da)*u;
+          const L2 = (1.0 + 1.2*du) * dpr;
+          ctx.strokeStyle = 'rgba(237,237,234,' + ((.09 + .13*du)*ip).toFixed(3) + ')';
+          ctx.beginPath();
+          ctx.moveTo(px2 - nx*L2, py2 - ny*L2);
+          ctx.lineTo(px2 + nx*L2, py2 + ny*L2);
+          ctx.stroke();
+        }
+      }
+      if (ep < 1){
+        ctx.fillStyle = ACCENT; ctx.globalAlpha = .9;
+        ctx.beginPath(); ctx.arc(bx, by, 1.8 * dpr, 0, 7); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    });
+    /* junction nodes — dots ride the visual crossings of front and back edges */
+    if (ip >= 1){
+      ctx.fillStyle = 'rgba(237,237,234,.22)';
+      for (let i1 = 0; i1 < ED.length; i1++){
+        for (let i2 = i1 + 1; i2 < ED.length; i2++){
+          const E1 = ED[i1], E2 = ED[i2];
+          if (E1[0]===E2[0]||E1[0]===E2[1]||E1[1]===E2[0]||E1[1]===E2[1]) continue;
+          const a1 = proj[E1[0]], b1 = proj[E1[1]], a2 = proj[E2[0]], b2 = proj[E2[1]];
+          const d1x = b1.x-a1.x, d1y = b1.y-a1.y, d2x = b2.x-a2.x, d2y = b2.y-a2.y;
+          const den = d1x*d2y - d1y*d2x;
+          if (Math.abs(den) < 1e-6) continue;
+          const sP = ((a2.x-a1.x)*d2y - (a2.y-a1.y)*d2x) / den;
+          const tP = ((a2.x-a1.x)*d1y - (a2.y-a1.y)*d1x) / den;
+          if (sP > .06 && sP < .94 && tP > .06 && tP < .94){
+            ctx.beginPath();
+            ctx.arc(a1.x + d1x*sP, a1.y + d1y*sP, 1.1 * dpr, 0, 7);
+            ctx.fill();
+          }
+        }
+      }
+    }
+    /* ambient micro-traffic — a near-invisible data pulse, every few seconds */
+    if (!REDUCED && ip >= 1){
+      if (!amb && Math.random() < dt * .0004)
+        amb = { e: (Math.random() * ED.length) | 0, u: 0, sp: .0009 + Math.random() * .0006 };
+      if (amb){
+        amb.u += dt * amb.sp;
+        if (amb.u >= 1) amb = null;
+        else {
+          const E = ED[amb.e], aA = proj[E[0]], bA = proj[E[1]];
+          ctx.fillStyle = 'rgba(237,237,234,.28)';
+          ctx.beginPath();
+          ctx.arc(aA.x + (bA.x-aA.x)*amb.u, aA.y + (bA.y-aA.y)*amb.u, .9 * dpr, 0, 7);
+          ctx.fill();
+        }
+      }
+    }
     /* focused icon: lines fade into the icon with a soft pulse */
-    if (focus > -1){
+    if ((!coarse || centering) && focus > -1 && ip >= 1){
       const fp = proj[focus], b = beat(t);
       ctx.lineCap = 'round';
       ED.forEach(e => {
@@ -398,8 +530,80 @@ const Cube = (function(){
       ctx.globalAlpha = 1;
       ctx.lineCap = 'butt';
     }
+    /* proximity field — the cube answers the finger continuously */
+    if (prox){
+      const b2 = beat(t);
+      ctx.lineCap = 'round';
+      prox.forEach((wv, vi) => {
+        if (wv < .05) return;
+        const fp = proj[vi];
+        ED.forEach(e => {
+          if (e[0] !== vi && e[1] !== vi) return;
+          const o = proj[e[0] === vi ? e[1] : e[0]];
+          const grad = ctx.createLinearGradient(o.x, o.y, fp.x, fp.y);
+          grad.addColorStop(0,   'rgba(224,92,255,0)');
+          grad.addColorStop(.45, 'rgba(224,92,255,0)');
+          grad.addColorStop(1,   'rgba(224,92,255,1)');
+          ctx.strokeStyle = grad;
+          ctx.globalAlpha = wv * (.10 + .40 * b2);
+          ctx.lineWidth = (1.2 + 2.5 * wv) * dpr;
+          ctx.beginPath(); ctx.moveTo(o.x, o.y); ctx.lineTo(fp.x, fp.y); ctx.stroke();
+        });
+      });
+      ctx.globalAlpha = 1;
+      ctx.lineCap = 'butt';
+    }
+    /* second-degree echo — the network answers a beat later */
+    if (propag){
+      const eT = t - propag.t0;
+      if (eT > 760){ propag = null; }
+      else if (eT > 140){
+        const env = Math.sin(Math.min(1, (eT - 140) / 620) * Math.PI) * .16;
+        const nb = [];
+        ED.forEach(e => { if (e[0] === propag.i) nb.push(e[1]); if (e[1] === propag.i) nb.push(e[0]); });
+        ctx.strokeStyle = GLOW; ctx.globalAlpha = env; ctx.lineWidth = 1.4 * dpr;
+        ED.forEach(e => {
+          if (e[0] === propag.i || e[1] === propag.i) return;
+          if (!nb.includes(e[0]) && !nb.includes(e[1])) return;
+          const a = proj[e[0]], b = proj[e[1]];
+          ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
+        });
+        ctx.globalAlpha = 1;
+      }
+    }
+    /* idle signal — after 20s untouched, a faint point walks the wireframe */
+    if (!REDUCED && ip >= 1 && !dragging && !centering && t - lastAct > 20000){
+      if (!idle) idle = { e: 0, fwd: true, u: 0 };
+      idle.u += dt / 1600;
+      if (idle.u >= 1){
+        idle.u = 0;
+        const av = idle.fwd ? ED[idle.e][1] : ED[idle.e][0];
+        const opts = [];
+        ED.forEach((e2, i2) => { if (i2 !== idle.e && (e2[0] === av || e2[1] === av)) opts.push(i2); });
+        idle.e = opts[(Math.random() * opts.length) | 0];
+        idle.fwd = ED[idle.e][0] === av;
+      }
+      const E = ED[idle.e];
+      const a = proj[idle.fwd ? E[0] : E[1]], b = proj[idle.fwd ? E[1] : E[0]];
+      const X = a.x + (b.x - a.x) * idle.u, Y = a.y + (b.y - a.y) * idle.u;
+      ctx.fillStyle = GLOW; ctx.globalAlpha = .32;
+      ctx.beginPath(); ctx.arc(X, Y, 1.8 * dpr, 0, 7); ctx.fill();
+      ctx.globalAlpha = 1;
+    } else if (idle && t - lastAct <= 20000){ idle = null; }
+    /* contact ripple — the glass acknowledges the finger */
+    for (let ri = ripples.length - 1; ri >= 0; ri--){
+      const rp2 = ripples[ri], age = t - rp2.t0;
+      if (age > 380){ ripples.splice(ri, 1); continue; }
+      const pgs = age / 380;
+      ctx.strokeStyle = 'rgba(237,237,234,' + ((1 - pgs) * .5).toFixed(3) + ')';
+      ctx.lineWidth = 1.2 * dpr;
+      ctx.beginPath();
+      ctx.arc(rp2.x, rp2.y, (8 + 34 * pgs) * dpr, 0, 7);
+      ctx.stroke();
+    }
     /* platform icons at the vertices — painted back to front */
     const order = [...proj].sort((a,b) => a.z - b.z);
+    ctx.globalAlpha = ip;
     order.forEach(p => {
       const d = (p.z + 1.8)/3.6;
       const hov = focus === p.i;
@@ -410,9 +614,16 @@ const Cube = (function(){
       ctx.scale(sz/24, sz/24);
       ctx.fillStyle = hov ? ACCENT : 'rgba(237,237,234,' + (.38 + .58*d) + ')';
       ctx.fill(ICONS[p.i]);
+      if (prox && !hov && prox[p.i] > .03){
+        ctx.globalAlpha = ip * prox[p.i];
+        ctx.fillStyle = ACCENT;
+        ctx.fill(ICONS[p.i]);
+        ctx.globalAlpha = ip;
+      }
       ctx.restore();
     });
-    if (focus > -1){
+    ctx.globalAlpha = 1;
+    if (focus > -1 && ip >= 1){
       const p = proj[focus];
       const left = p.x < W/2;
       const lx = p.x + (left ? -28 : 28) * dpr, ly = p.y - 24*dpr;
@@ -430,6 +641,21 @@ const Cube = (function(){
       ctx.fillStyle = '#EDEDEA';
       ctx.fillText(label, lx, ly - 4*dpr);
     }
+    /* confirm ring — expands from the centered icon just before navigation */
+    if (centering && hover > -1){
+      const ct = performance.now() - centering.t0;
+      if (ct > 480){
+        const rp = Math.min(1, (ct - 480) / 400);
+        const cp = proj[hover];
+        ctx.strokeStyle = GLOW;
+        ctx.globalAlpha = (1 - rp) * .7;
+        ctx.lineWidth = 1.5 * dpr;
+        ctx.beginPath();
+        ctx.arc(cp.x, cp.y, (20 + 26 * rp) * dpr, 0, 7);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
   }
 
   function hit(e){
@@ -445,6 +671,7 @@ const Cube = (function(){
     return best;
   }
   cv.addEventListener('pointermove', e => {
+    lastAct = performance.now();
     if (dragging){
       const mx = e.movementX || 0, my = e.movementY || 0;
       ry += mx * .0042;                              /* free rotation, both axes */
@@ -453,11 +680,30 @@ const Cube = (function(){
       moved += Math.abs(mx) + Math.abs(my);
     }
     hover = hit(e);
+    if (coarse){
+      const r2 = cv.getBoundingClientRect();
+      fx = (e.clientX - r2.left) * dpr; fy = (e.clientY - r2.top) * dpr;
+      if (hover !== lastHapt){
+        if (hover > -1 && touching && navigator.vibrate) navigator.vibrate(8);
+        lastHapt = hover;
+      }
+    }
     if (!coarse) cv.style.cursor = hover > -1 ? 'pointer' : 'grab';
   });
-  cv.addEventListener('pointerdown', e => { dragging = true; moved = 0; lastDX = 0; centering = null; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointerdown', e => {
+    lastAct = performance.now(); dragging = true; moved = 0; lastDX = 0; centering = null;
+    if (coarse){
+      touching = true;
+      const r2 = cv.getBoundingClientRect();
+      fx = (e.clientX - r2.left) * dpr; fy = (e.clientY - r2.top) * dpr;
+      ripples.push({ x: fx, y: fy, t0: performance.now() });
+    }
+    cv.setPointerCapture(e.pointerId);
+  });
   cv.addEventListener('pointerup', e => {
+    lastAct = performance.now();
     dragging = false;
+    touching = false; lastHapt = -1;
     vel = Math.max(-.003, Math.min(.003, lastDX * .0004));   /* gentle release momentum */
     const h = hit(e);
     if (moved < 8 && h > -1){
@@ -474,9 +720,10 @@ const Cube = (function(){
       }
     }
   });
-  cv.addEventListener('pointerleave', () => { if (!centering) hover = -1; });
+  cv.addEventListener('pointerleave', () => { if (!centering) hover = -1; touching = false; });
 
-  return { draw };
+  function startIntro(){ if (intro < 0) intro = performance.now(); }
+  return { draw, startIntro };
 })();
 
 /* ── one loop ── */
