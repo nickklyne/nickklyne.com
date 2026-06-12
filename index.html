@@ -349,7 +349,7 @@ const Cube = (function(){
   let foc = 4, intro = -1, lastAct = performance.now(), idle = null, prevFocus = -1, propag = null;
   let ripples = [], fx = 0, fy = 0, touching = false, bphase = 0, pry = null;
   let tiltX = 0, tiltY = 0, tsx = 0, tsy = 0, lastHapt = -1, amb = null;
-  let calib = null, calibAt = 0, jb = null, jbAt = 0, lastK = 0, schI = 0;
+  let calib = null, calibAt = 0, jb = null, jbAt = 0, lastK = 0, schI = 0, party = null;
   const vbg = document.getElementById('bgvideo');
   const AUTO = REDUCED ? 0 : .00004;            /* ~2.6 min per revolution */
   const coarse = matchMedia('(pointer: coarse)').matches;
@@ -382,14 +382,28 @@ const Cube = (function(){
     if (centering){
       ry += (centering.ry - ry) * Math.min(1, dt * .008);
       rx += (centering.rx - rx) * Math.min(1, dt * .008);
-      if (performance.now() - centering.t0 > 950){
-        const url = centering.url; centering = null;
-        location.href = url;
+      if (centering.navAt){
+        if (performance.now() - centering.navAt > 320){
+          const url = centering.url; centering = null;
+          location.href = url;                       /* confirmed — go */
+        }
+      } else if (performance.now() - centering.t0 > 8000){
+        centering = null; hover = -1;                /* held too long untouched — release */
       }
     } else if (!dragging){
       ry += (AUTO + vel) * dt;
       vel *= .94;
       rx += (BASE_RX - rx) * Math.min(1, dt * .004);   /* spring back upright */
+    }
+    let pe = 0;                                         /* party envelope */
+    if (party){
+      const pT = t - party.t0;
+      if (pT > 3400){ party = null; }
+      else {
+        pe = Math.min(1, pT / 400) * Math.min(1, Math.max(0, (3400 - pT) / 800));
+        pe = pe * pe * (3 - 2 * pe);                    /* smooth in and out */
+        if (!dragging && !REDUCED) ry += dt * .0045 * pe;   /* the quick spin */
+      }
     }
     foc += ((dragging ? 3.55 : 4) - foc) * Math.min(1, dt * .01);   /* grab lean */
     tsx += (tiltX - tsx) * Math.min(1, dt * .005);
@@ -447,6 +461,24 @@ const Cube = (function(){
       ctx.stroke();
     });
     ctx.globalAlpha = 1;
+    if (pe > 0){
+      ctx.lineWidth = 1.4 * dpr;
+      OE.forEach(e => {
+        const va = OV[e[0]], vb = OV[e[1]];
+        const ax = va[0]*cy2 + va[2]*sy2, az1 = -va[0]*sy2 + va[2]*cy2;
+        const ay = va[1]*cx_ - az1*sx,  az = va[1]*sx + az1*cx_;
+        const bx2 = vb[0]*cy2 + vb[2]*sy2, bz1 = -vb[0]*sy2 + vb[2]*cy2;
+        const by2 = vb[1]*cx_ - bz1*sx,  bz = vb[1]*sx + bz1*cx_;
+        const ka = f/(f - az), kb = f/(f - bz);
+        const Y1 = oy + ay*ka*s2;
+        const hueI = ((Y1 / H) * 540 + Math.sin(t * .0012) * 240 + t * .04 + 720) % 360;
+        ctx.strokeStyle = 'hsla(' + hueI.toFixed(0) + ',92%,62%,' + (.45 * pe).toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.moveTo(ox + ax*ka*s2, Y1);
+        ctx.lineTo(ox + bx2*kb*s2, oy + by2*kb*s2);
+        ctx.stroke();
+      });
+    }
     /* faces — glass: light events, responses, registration. never constant */
     FACES.forEach((fc, fi) => {
       const n0 = FNORM[fi];
@@ -534,6 +566,21 @@ const Cube = (function(){
       ctx.lineTo(bx - nx*wb/2, by - ny*wb/2);
       ctx.lineTo(a.x - nx*wa/2, a.y - ny*wa/2);
       ctx.closePath(); ctx.fill();
+      if (pe > 0){
+        const phs = Math.sin(t * .0012) * 240 + t * .04;
+        const hueA = ((a.y / H) * 540 + phs + 720) % 360;
+        const hueB = ((by / H) * 540 + phs + 720) % 360;
+        const rg2 = ctx.createLinearGradient(a.x, a.y, bx, by);
+        rg2.addColorStop(0, 'hsla(' + hueA.toFixed(0) + ',92%,62%,' + ((.42 + .5*da) * pe).toFixed(3) + ')');
+        rg2.addColorStop(1, 'hsla(' + hueB.toFixed(0) + ',92%,62%,' + ((.42 + .5*db) * pe).toFixed(3) + ')');
+        ctx.fillStyle = rg2;
+        ctx.beginPath();
+        ctx.moveTo(a.x + nx*wa/2, a.y + ny*wa/2);
+        ctx.lineTo(bx + nx*wb/2, by + ny*wb/2);
+        ctx.lineTo(bx - nx*wb/2, by - ny*wb/2);
+        ctx.lineTo(a.x - nx*wa/2, a.y - ny*wa/2);
+        ctx.closePath(); ctx.fill();
+      }
       if (ep >= 1){
         if (d > .55){                                                  /* construction hairline */
           ctx.strokeStyle = 'rgba(237,237,234,' + Math.min(1, .07 * ip * (1 + 1.2 * schI)).toFixed(3) + ')';
@@ -757,20 +804,17 @@ const Cube = (function(){
       ctx.fillStyle = '#EDEDEA';
       ctx.fillText(label, lx, ly - 4*dpr);
     }
-    /* confirm ring — expands from the centered icon just before navigation */
-    if (centering && hover > -1){
-      const ct = performance.now() - centering.t0;
-      if (ct > 480){
-        const rp = Math.min(1, (ct - 480) / 400);
-        const cp = proj[hover];
-        ctx.strokeStyle = GLOW;
-        ctx.globalAlpha = (1 - rp) * .7;
-        ctx.lineWidth = 1.5 * dpr;
-        ctx.beginPath();
-        ctx.arc(cp.x, cp.y, (20 + 26 * rp) * dpr, 0, 7);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
+    /* confirm ring — fires on the second tap, just before navigation */
+    if (centering && centering.navAt && hover > -1){
+      const rp = Math.min(1, (performance.now() - centering.navAt) / 340);
+      const cp = proj[hover];
+      ctx.strokeStyle = GLOW;
+      ctx.globalAlpha = (1 - rp) * .7;
+      ctx.lineWidth = 1.5 * dpr;
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, (20 + 26 * rp) * dpr, 0, 7);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -794,6 +838,7 @@ const Cube = (function(){
       rx = Math.max(-1.35, Math.min(1.35, rx + my * .0042));
       lastDX = mx;
       moved += Math.abs(mx) + Math.abs(my);
+      if (moved >= 8) centering = null;              /* a drag releases the hold */
     }
     hover = hit(e);
     if (coarse){
@@ -807,7 +852,7 @@ const Cube = (function(){
     if (!coarse) cv.style.cursor = hover > -1 ? 'pointer' : 'grab';
   });
   cv.addEventListener('pointerdown', e => {
-    lastAct = performance.now(); dragging = true; moved = 0; lastDX = 0; centering = null;
+    lastAct = performance.now(); dragging = true; moved = 0; lastDX = 0;
     if (coarse){
       touching = true;
       const r2 = cv.getBoundingClientRect();
@@ -824,13 +869,19 @@ const Cube = (function(){
     const h = hit(e);
     if (moved < 8 && h > -1){
       if (coarse){
-        /* tap: spin the icon to the center, let it pulse, then go */
-        const v = VS[h], TWO = Math.PI * 2;
-        let tRy = Math.atan2(-v[0], v[2]);
-        tRy = ry + (((tRy - ry) % TWO) + TWO * 1.5) % TWO - TWO / 2;
-        const tRx = Math.atan2(v[1], Math.hypot(v[0], v[2]));
-        centering = { ry: tRy, rx: tRx, url: CONTENT.links[h].url, t0: performance.now() };
-        hover = h; vel = 0;
+        if (centering && centering.navAt){
+          /* navigation already confirmed — ignore further taps */
+        } else if (centering && centering.i === h && performance.now() - centering.t0 > 350){
+          centering.navAt = performance.now();       /* second tap on the centered icon: confirm */
+        } else {
+          /* tap: spin the icon to the center and hold it as the selection */
+          const v = VS[h], TWO = Math.PI * 2;
+          let tRy = Math.atan2(-v[0], v[2]);
+          tRy = ry + (((tRy - ry) % TWO) + TWO * 1.5) % TWO - TWO / 2;
+          const tRx = Math.atan2(v[1], Math.hypot(v[0], v[2]));
+          centering = { i: h, ry: tRy, rx: tRx, url: CONTENT.links[h].url, t0: performance.now() };
+          hover = h; vel = 0;
+        }
       } else {
         window.open(CONTENT.links[h].url, '_blank', 'noopener');
       }
@@ -839,7 +890,8 @@ const Cube = (function(){
   cv.addEventListener('pointerleave', () => { if (!centering) hover = -1; touching = false; });
 
   function startIntro(){ if (intro < 0) intro = performance.now(); }
-  return { draw, startIntro };
+  function startParty(){ party = { t0: performance.now() }; centering = null; lastAct = performance.now(); }
+  return { draw, startIntro, startParty };
 })();
 
 /* ── one loop ── */
@@ -854,6 +906,17 @@ const Cube = (function(){
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) cancelAnimationFrame(raf);
     else { prev = performance.now(); raf = requestAnimationFrame(loop); }
+  });
+})();
+
+/* ── easter egg — the mark wakes the cube ── */
+(function(){
+  const m = document.querySelector('.lockup svg');
+  if (!m) return;
+  m.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    Cube.startParty();
   });
 })();
 
