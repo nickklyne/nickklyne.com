@@ -104,7 +104,8 @@
   }
   header > *{pointer-events:auto}
   .lockup{display:flex;flex-direction:column;align-items:center;gap:.5rem;text-decoration:none}
-  .lockup svg{width:clamp(32px,3.6vw,42px);height:clamp(32px,3.6vw,42px);padding:14px;margin:-14px}
+  .lockup svg{width:clamp(32px,3.6vw,42px);height:clamp(32px,3.6vw,42px);padding:14px;margin:-14px;box-sizing:content-box}
+  html,body{touch-action:pan-x pan-y}
   .lockup .wm{
     font-family:var(--display);font-weight:400;
     font-size:clamp(1.05rem,2.1vw,1.4rem);
@@ -919,6 +920,10 @@ const Cube = (function(){
     Cube.startParty();
   });
 })();
+
+/* ── no pinch zoom — iOS Safari ignores the viewport meta ── */
+['gesturestart','gesturechange','gestureend'].forEach(ev =>
+  document.addEventListener(ev, e => e.preventDefault(), { passive: false }));
 
 /* ── mailing list → Brevo ── */
 (function(){
